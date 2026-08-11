@@ -3,6 +3,7 @@
 #include "slot.hpp"
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,8 +19,21 @@ struct Diagnostics final {
     std::atomic<uint64_t> voice_exhausted{0};
     std::atomic<uint64_t> slot_active_capture{0};
     std::atomic<uint64_t> midi_overflow{0};
+    std::atomic<uint64_t> midi_event_count{0};
+    std::atomic<uint64_t> bbt_valid_callbacks{0};
+    std::atomic<int64_t> last_bpm_milli{0};
+    std::atomic<uint64_t> midi_note_on_ch0{0};
+    std::atomic<uint64_t> midi_note_off_ch0{0};
+    std::atomic<uint64_t> midi_note_on_ch1{0};
+    std::atomic<uint64_t> midi_note_off_ch1{0};
+    std::atomic<uint64_t> capture_start{0};
+    std::atomic<uint64_t> capture_stop{0};
+    std::atomic<uint64_t> slot_commit{0};
+    std::atomic<uint64_t> play_start{0};
+    std::atomic<uint64_t> play_stop{0};
     std::atomic<uint64_t> finalize_overflow{0};
     std::atomic<uint64_t> publish_overflow{0};
+    std::atomic<uint64_t> runtime_sample_destructions{0};
     std::atomic<uint64_t> play_onsets{0};
     std::atomic<int64_t> last_onset_error_frames{0};
 };
@@ -62,9 +76,7 @@ private:
     };
 
     void drain_publish_queue() noexcept;
-    void drain_deferred_retire_queue() noexcept;
-    void drain_retire_queue();
-    static void destroy_sample(SampleBuffer* sample) noexcept;
+    void destroy_sample(SampleBuffer* sample) noexcept;
     bool publish_sample(SampleBuffer* sample) noexcept;
     void worker_loop();
     void handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm) noexcept;
@@ -92,11 +104,12 @@ private:
     std::array<Voice, 8> voices_{};
     SpscQueue<FinalizeRequest, 8> finalize_queue_;
     SpscQueue<SampleBuffer*, 8> publish_queue_;
-    SpscQueue<SampleBuffer*, 32> retire_queue_;
-    std::array<SampleBuffer*, 256> deferred_retire_{};
-    std::size_t deferred_retire_count_ = 0;
+    std::array<SampleBuffer*, 384> retired_samples_{};
+    std::size_t retired_count_ = 0;
     SampleBuffer* blocked_publish_ = nullptr;
+    SampleBuffer* shutdown_pending_ = nullptr;
     std::atomic<bool> worker_stop_{false};
+    std::atomic<bool> runtime_active_{false};
     std::thread worker_;
     bool capture_active_ = false;
     bool capture_pending_ = false;

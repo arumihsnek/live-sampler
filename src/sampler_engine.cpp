@@ -1,6 +1,7 @@
 #include "sampler_engine.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -38,6 +39,7 @@ SamplerEngine::SamplerEngine(double sample_rate, uint32_t quantum, double max_ca
 
 SamplerEngine::~SamplerEngine() {
     stop_worker();
+    assert(diagnostics_.runtime_sample_destructions.load(std::memory_order_acquire) == 0);
     for (auto& voice : voices_) {
         voice.active = false;
         voice.sample = nullptr;
@@ -49,27 +51,29 @@ SamplerEngine::~SamplerEngine() {
     }
     SampleBuffer* p = nullptr;
     while (publish_queue_.pop(p)) destroy_sample(p);
-    while (retire_queue_.pop(p)) destroy_sample(p);
-    for (std::size_t i = 0; i < deferred_retire_count_; ++i) destroy_sample(deferred_retire_[i]);
+    for (std::size_t i = 0; i < retired_count_; ++i) destroy_sample(retired_samples_[i]);
     destroy_sample(blocked_publish_);
+    destroy_sample(shutdown_pending_);
     blocked_publish_ = nullptr;
-    deferred_retire_count_ = 0;
+    shutdown_pending_ = nullptr;
+    retired_count_ = 0;
 }
 
 void SamplerEngine::start_worker() {
     worker_stop_.store(false, std::memory_order_release);
+    runtime_active_.store(true, std::memory_order_release);
     worker_ = std::thread(&SamplerEngine::worker_loop, this);
 }
 
 void SamplerEngine::stop_worker() {
     worker_stop_.store(true, std::memory_order_release);
     if (worker_.joinable()) worker_.join();
+    runtime_active_.store(false, std::memory_order_release);
 }
 
 void SamplerEngine::worker_loop() {
     SampleBuffer* pending = nullptr;
     while (!worker_stop_.load(std::memory_order_acquire)) {
-        drain_retire_queue();
         if (pending != nullptr) {
             if (publish_queue_.push(pending)) pending = nullptr;
         }
@@ -90,14 +94,19 @@ void SamplerEngine::worker_loop() {
         }
     }
     if (pending != nullptr) {
-        if (!publish_queue_.push(pending)) destroy_sample(pending);
-        pending = nullptr;
+        // The owner is transferred to the post-join destructor. Never reclaim
+        // a SampleBuffer from the worker while the runtime may still be live.
+        shutdown_pending_ = pending;
     }
-    drain_retire_queue();
 }
 
 void SamplerEngine::destroy_sample(SampleBuffer* sample) noexcept {
     if (sample == nullptr) return;
+    const bool runtime = runtime_active_.load(std::memory_order_acquire);
+    if (runtime) {
+        diagnostics_.runtime_sample_destructions.fetch_add(1, std::memory_order_relaxed);
+        std::abort();
+    }
     delete[] sample->left;
     delete[] sample->right;
     delete sample;
@@ -135,32 +144,9 @@ bool SamplerEngine::publish_sample(SampleBuffer* sample) noexcept {
         }
     }
     slots_[note].current = sample;
+    diagnostics_.slot_commit.fetch_add(1, std::memory_order_relaxed);
     capture_pending_ = false;
     return true;
-}
-
-void SamplerEngine::drain_retire_queue() {
-    SampleBuffer* sample = nullptr;
-    while (retire_queue_.pop(sample)) {
-        destroy_sample(sample);
-    }
-}
-
-void SamplerEngine::drain_deferred_retire_queue() noexcept {
-    std::size_t write = 0;
-    for (std::size_t i = 0; i < deferred_retire_count_; ++i) {
-        SampleBuffer* sample = deferred_retire_[i];
-        sample->retire_deferred = false;
-        sample->retire_queued = true;
-        if (retire_queue_.push(sample)) {
-            // Ownership has transferred to the worker. Do not touch sample.
-        } else {
-            sample->retire_queued = false;
-            sample->retire_deferred = true;
-            deferred_retire_[write++] = sample;
-        }
-    }
-    deferred_retire_count_ = write;
 }
 
 bool SamplerEngine::sample_referenced(SampleBuffer* sample) const noexcept {
@@ -180,23 +166,15 @@ bool SamplerEngine::sample_voice_referenced(SampleBuffer* sample) const noexcept
 }
 
 bool SamplerEngine::enqueue_retirement(SampleBuffer* sample) noexcept {
-    if (sample == nullptr || sample->retire_queued || sample->retire_deferred) return true;
+    if (sample == nullptr || sample->retire_queued) return true;
+    if (retired_count_ >= retired_samples_.size()) return false;
+    retired_samples_[retired_count_++] = sample;
     sample->retire_queued = true;
-    if (retire_queue_.push(sample)) {
-        // Ownership has transferred to the worker. Do not touch sample.
-        return true;
-    }
-    sample->retire_queued = false;
-    if (deferred_retire_count_ < deferred_retire_.size()) {
-        deferred_retire_[deferred_retire_count_++] = sample;
-        sample->retire_deferred = true;
-        return true;
-    }
-    return false;
+    return true;
 }
 
 bool SamplerEngine::retire_if_unused(SampleBuffer* sample) noexcept {
-    if (sample == nullptr || sample->retire_queued || sample->retire_deferred || sample_referenced(sample)) return true;
+    if (sample == nullptr || sample->retire_queued || sample_referenced(sample)) return true;
     return enqueue_retirement(sample);
 }
 
@@ -219,6 +197,7 @@ void SamplerEngine::start_capture(int note, bool valid_bbt, bool rolling) noexce
     capture_slot_ = note;
     capture_frames_ = 0;
     capture_start_beat_ = beat_counter_;
+    diagnostics_.capture_start.fetch_add(1, std::memory_order_relaxed);
 }
 
 void SamplerEngine::stop_capture(int note) noexcept {
@@ -232,6 +211,7 @@ void SamplerEngine::stop_capture(int note) noexcept {
     capture_active_ = false;
     capture_pending_ = true;
     capture_slot_ = -1;
+    diagnostics_.capture_stop.fetch_add(1, std::memory_order_relaxed);
 }
 
 void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm) noexcept {
@@ -245,6 +225,7 @@ void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool 
     chosen->slot = note;
     chosen->velocity = velocity;
     chosen->sample = slots_[note].current;
+    diagnostics_.play_start.fetch_add(1, std::memory_order_relaxed);
     chosen->source_pos = 0;
     chosen->final_sent = false;
     chosen->stretcher->reset();
@@ -258,7 +239,10 @@ void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool 
 }
 
 void SamplerEngine::stop_play(int note) noexcept {
-    for (auto& v : voices_) if (v.active && v.slot == note) release_voice(v);
+    for (auto& v : voices_) if (v.active && v.slot == note) {
+        diagnostics_.play_stop.fetch_add(1, std::memory_order_relaxed);
+        release_voice(v);
+    }
 }
 
 void SamplerEngine::handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm) noexcept {
@@ -267,8 +251,15 @@ void SamplerEngine::handle_event(const MidiEvent& event, bool valid_bbt, bool ro
     const int note = static_cast<int>(event.data1 & 0x7FU);
     if (type != 0x80U && type != 0x90U) return;
     const bool on = type == 0x90U && event.data2 != 0;
-    if (channel == 0) { if (on) start_capture(note, valid_bbt, rolling); else stop_capture(note); }
-    else if (channel == 1) { if (on) start_play(note, event.data2, valid_bbt, rolling, bpm); else stop_play(note); }
+    if (channel == 0) {
+        if (on) diagnostics_.midi_note_on_ch0.fetch_add(1, std::memory_order_relaxed);
+        else diagnostics_.midi_note_off_ch0.fetch_add(1, std::memory_order_relaxed);
+        if (on) start_capture(note, valid_bbt, rolling); else stop_capture(note);
+    } else if (channel == 1) {
+        if (on) diagnostics_.midi_note_on_ch1.fetch_add(1, std::memory_order_relaxed);
+        else diagnostics_.midi_note_off_ch1.fetch_add(1, std::memory_order_relaxed);
+        if (on) start_play(note, event.data2, valid_bbt, rolling, bpm); else stop_play(note);
+    }
 }
 
 void SamplerEngine::capture_segment(std::size_t offset, std::size_t frames, const float* in_left, const float* in_right) noexcept {
@@ -345,7 +336,11 @@ void SamplerEngine::render_segment(std::size_t offset, std::size_t frames, const
 void SamplerEngine::process(uint32_t nframes, const float* in_left, const float* in_right,
                             float* out_left, float* out_right, const MidiEvent* events, std::size_t event_count,
                             bool valid_bbt, bool rolling, double bpm) noexcept {
-    drain_deferred_retire_queue();
+    assert(diagnostics_.runtime_sample_destructions.load(std::memory_order_acquire) == 0);
+    if (valid_bbt && rolling && bpm > 0.0) {
+        diagnostics_.bbt_valid_callbacks.fetch_add(1, std::memory_order_relaxed);
+        diagnostics_.last_bpm_milli.store(static_cast<int64_t>(bpm * 1000.0), std::memory_order_relaxed);
+    }
     drain_publish_queue();
     std::memset(out_left, 0, nframes * sizeof(float));
     std::memset(out_right, 0, nframes * sizeof(float));

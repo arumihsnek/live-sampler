@@ -8,8 +8,8 @@ struct SampleBuffer final {
     double sample_rate = 0.0;
     double captured_beats = 0.0;
     int slot = -1;
+    // Set once the buffer has moved to the non-RT shutdown-retirement store.
     bool retire_queued = false;
-    bool retire_deferred = false;
 };
 
 struct Slot final {
