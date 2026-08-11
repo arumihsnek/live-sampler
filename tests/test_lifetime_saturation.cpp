@@ -25,21 +25,23 @@ int main() {
     auto* old = sample(36);
     engine.slots_[36].current = old;
 
-    for (std::size_t i = 0; i < 31; ++i) {
-        auto* p = sample(static_cast<int>(i));
+    for (std::size_t i = 0; i < engine.retired_samples_.size(); ++i) {
+        auto* p = sample(static_cast<int>(i % 128));
         p->retire_queued = true;
-        expect(engine.retire_queue_.push(p), "fill retire queue");
-    }
-    for (std::size_t i = 0; i < engine.deferred_retire_.size(); ++i) {
-        auto* p = sample(static_cast<int>(i));
-        p->retire_deferred = true;
-        engine.deferred_retire_[engine.deferred_retire_count_++] = p;
+        engine.retired_samples_[engine.retired_count_++] = p;
     }
 
     auto* replacement = sample(36);
     expect(engine.publish_queue_.push(replacement), "publish replacement");
     float in[1]{}; float out[1]{};
+    engine.start_worker();
     engine.process(1, in, in, out, out, nullptr, 0, true, true, 120.0);
-    expect(engine.slots_[36].current == old, "old slot retained when retire stores full");
-    expect(engine.blocked_publish_ == replacement, "replacement retained when retire stores full");
+    expect(engine.slots_[36].current == old, "old slot retained when retirement store is full");
+    expect(engine.blocked_publish_ == replacement, "replacement retained when retirement store is full");
+    expect(engine.diagnostics_.runtime_sample_destructions.load() == 0,
+           "no SampleBuffer destruction during runtime");
+    engine.stop_worker();
+    expect(engine.diagnostics_.runtime_sample_destructions.load() == 0,
+           "no SampleBuffer destruction before shutdown cleanup");
+    std::cout << "PASS lifetime_saturation runtime_sample_destructions=0\n";
 }

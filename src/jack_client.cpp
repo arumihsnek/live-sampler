@@ -44,10 +44,18 @@ void JackClient::run_until_stopped() {
 
 void JackClient::print_diagnostics() const {
     const auto& d = engine_->diagnostics();
-    std::cout << "diagnostics invalid_bbt=" << d.invalid_bbt.load() << " capture_while_busy=" << d.capture_while_busy.load()
-              << " empty_play=" << d.empty_play.load() << " voice_exhausted=" << d.voice_exhausted.load()
-              << " slot_active_capture=" << d.slot_active_capture.load() << " finalize_overflow=" << d.finalize_overflow.load()
-              << " publish_overflow=" << d.publish_overflow.load() << " onset_delay_frames=" << d.last_onset_error_frames.load() << '\n';
+    std::cout << "diagnostics invalid_bbt=" << d.invalid_bbt.load() << " midi_event_count=" << d.midi_event_count.load()
+              << " bbt_valid_callbacks=" << d.bbt_valid_callbacks.load() << " last_bpm_milli=" << d.last_bpm_milli.load()
+              << " midi_note_on_ch0=" << d.midi_note_on_ch0.load() << " midi_note_off_ch0=" << d.midi_note_off_ch0.load()
+              << " midi_note_on_ch1=" << d.midi_note_on_ch1.load() << " midi_note_off_ch1=" << d.midi_note_off_ch1.load()
+              << " capture_start=" << d.capture_start.load() << " capture_stop=" << d.capture_stop.load()
+              << " slot_commit=" << d.slot_commit.load() << " play_start=" << d.play_start.load()
+              << " play_stop=" << d.play_stop.load() << " slot36_frames=" << engine_->slot_frames(36)
+              << " slot36_beats=" << engine_->slot_beats(36) << " runtime_sample_destructions=" << d.runtime_sample_destructions.load()
+              << " capture_while_busy=" << d.capture_while_busy.load() << " empty_play=" << d.empty_play.load()
+              << " voice_exhausted=" << d.voice_exhausted.load() << " slot_active_capture=" << d.slot_active_capture.load()
+              << " finalize_overflow=" << d.finalize_overflow.load() << " publish_overflow=" << d.publish_overflow.load()
+              << " onset_delay_frames=" << d.last_onset_error_frames.load() << '\n';
 }
 
 int JackClient::process_cb(jack_nframes_t nframes, void* arg) noexcept { return static_cast<JackClient*>(arg)->process(nframes); }
@@ -61,6 +69,7 @@ int JackClient::process(jack_nframes_t nframes) noexcept {
     void* midi = jack_port_get_buffer(midi_in_, nframes);
     MidiEvent events[256]{};
     const uint32_t count = jack_midi_get_event_count(midi);
+    engine_->diagnostics().midi_event_count.fetch_add(count, std::memory_order_relaxed);
     std::size_t used = 0;
     for (uint32_t i = 0; i < count; ++i) {
         jack_midi_event_t ev{};
