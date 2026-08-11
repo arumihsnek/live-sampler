@@ -122,7 +122,7 @@ static int process(jack_nframes_t n, void* arg) {
     auto* il=static_cast<const float*>(jack_port_get_buffer(d->ai1,n)); auto* ir=static_cast<const float*>(jack_port_get_buffer(d->ai2,n)); void* mb=jack_port_get_buffer(d->mo,n); jack_midi_clear_buffer(mb);
     jack_position_t p{}; const jack_transport_state_t transport=jack_transport_query(d->client,&p); const uint64_t base=p.frame; const uint64_t rel=d->timeline; d->last_frame=rel;
     for (jack_nframes_t i=0;i<n;++i) { const double x=0.2*std::sin(2.0*M_PI*source_hz(d,rel+i)*static_cast<double>(base+i)/d->sr); l[i]=static_cast<float>(x); r[i]=static_cast<float>(x); if (d->rec_frames<d->rec_l.size()) { d->rec_l[d->rec_frames]=il[i]; d->rec_r[d->rec_frames]=ir[i]; ++d->rec_frames; } }
-    if (transport != JackTransportRolling && transport != JackTransportStarting && transport != JackTransportLooping) return 0;
+    if (transport != JackTransportRolling) return 0;
     d->timeline += n;
     if (d->mode != "seq66") {
         auto emit=[&](uint64_t at,uint8_t st,uint8_t note,uint8_t vel){ if (at>=rel && at<rel+n) { uint8_t msg[3]={st,note,vel}; jack_midi_event_write(mb,static_cast<jack_nframes_t>(at-rel),msg,3); std::cout.flush(); } };
