@@ -1,4 +1,42 @@
-build-debug/
-build-release/
-evidence/
+# Local build trees and generated build files
+build/
+build-*/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+Testing/
+
+# Compiled objects, libraries, executables, and crash dumps
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+core
+core.*
+
+# Local audio captures and pilot output
 *.wav
+*.raw
+*.flac
+
+# Local pilot/evidence material (kept outside the public repository)
+evidence/
+*-evidence/
+pilot-evidence/
+
+# Editor and machine-local files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
