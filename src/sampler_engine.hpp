@@ -21,6 +21,7 @@ struct Diagnostics final {
     std::atomic<uint64_t> midi_overflow{0};
     std::atomic<uint64_t> midi_event_count{0};
     std::atomic<uint64_t> bbt_valid_callbacks{0};
+    std::atomic<uint64_t> bbt_bpm_changes{0};
     std::atomic<int64_t> last_bpm_milli{0};
     std::atomic<uint64_t> midi_note_on_ch0{0};
     std::atomic<uint64_t> midi_note_off_ch0{0};
@@ -33,6 +34,7 @@ struct Diagnostics final {
     std::atomic<uint64_t> play_stop{0};
     std::atomic<uint64_t> finalize_overflow{0};
     std::atomic<uint64_t> publish_overflow{0};
+    std::atomic<uint64_t> retirement_store_full{0};
     std::atomic<uint64_t> runtime_sample_destructions{0};
     std::atomic<uint64_t> play_onsets{0};
     std::atomic<int64_t> last_onset_error_frames{0};
@@ -118,5 +120,6 @@ private:
     double capture_start_beat_ = 0.0;
     double beat_counter_ = 0.0;
     bool beat_initialized_ = false;
+    int64_t previous_valid_bpm_milli_ = 0;
     Diagnostics diagnostics_;
 };

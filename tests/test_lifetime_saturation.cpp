@@ -40,8 +40,10 @@ int main() {
     expect(engine.blocked_publish_ == replacement, "replacement retained when retirement store is full");
     expect(engine.diagnostics_.runtime_sample_destructions.load() == 0,
            "no SampleBuffer destruction during runtime");
+    expect(engine.diagnostics_.retirement_store_full.load() == 1,
+           "retirement store saturation is diagnosed");
     engine.stop_worker();
     expect(engine.diagnostics_.runtime_sample_destructions.load() == 0,
            "no SampleBuffer destruction before shutdown cleanup");
-    std::cout << "PASS lifetime_saturation runtime_sample_destructions=0\n";
+    std::cout << "PASS lifetime_saturation runtime_sample_destructions=0 retirement_store_full=1\n";
 }

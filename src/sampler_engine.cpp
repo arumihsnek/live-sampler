@@ -139,6 +139,7 @@ bool SamplerEngine::publish_sample(SampleBuffer* sample) noexcept {
         // the worker. If enqueue fails, no worker saw old and rollback is safe.
         slots_[note].current = nullptr;
         if (!enqueue_retirement(old)) {
+            diagnostics_.retirement_store_full.fetch_add(1, std::memory_order_relaxed);
             slots_[note].current = old;
             return false;
         }
@@ -192,7 +193,7 @@ void SamplerEngine::start_capture(int note, bool valid_bbt, bool rolling) noexce
     if (!valid_bbt || !rolling) { diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed); return; }
     if (capture_active_ || capture_pending_) { diagnostics_.capture_while_busy.fetch_add(1, std::memory_order_relaxed); return; }
     if (note < 0 || note >= 128) return;
-    if (sample_referenced(slots_[note].current)) { diagnostics_.slot_active_capture.fetch_add(1, std::memory_order_relaxed); return; }
+    if (sample_voice_referenced(slots_[note].current)) { diagnostics_.slot_active_capture.fetch_add(1, std::memory_order_relaxed); return; }
     capture_active_ = true;
     capture_slot_ = note;
     capture_frames_ = 0;
@@ -339,7 +340,12 @@ void SamplerEngine::process(uint32_t nframes, const float* in_left, const float*
     assert(diagnostics_.runtime_sample_destructions.load(std::memory_order_acquire) == 0);
     if (valid_bbt && rolling && bpm > 0.0) {
         diagnostics_.bbt_valid_callbacks.fetch_add(1, std::memory_order_relaxed);
-        diagnostics_.last_bpm_milli.store(static_cast<int64_t>(bpm * 1000.0), std::memory_order_relaxed);
+        const int64_t bpm_milli = static_cast<int64_t>(bpm * 1000.0);
+        if (previous_valid_bpm_milli_ != 0 && previous_valid_bpm_milli_ != bpm_milli) {
+            diagnostics_.bbt_bpm_changes.fetch_add(1, std::memory_order_relaxed);
+        }
+        previous_valid_bpm_milli_ = bpm_milli;
+        diagnostics_.last_bpm_milli.store(bpm_milli, std::memory_order_relaxed);
     }
     drain_publish_queue();
     std::memset(out_left, 0, nframes * sizeof(float));

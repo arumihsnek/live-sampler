@@ -45,7 +45,8 @@ void JackClient::run_until_stopped() {
 void JackClient::print_diagnostics() const {
     const auto& d = engine_->diagnostics();
     std::cout << "diagnostics invalid_bbt=" << d.invalid_bbt.load() << " midi_event_count=" << d.midi_event_count.load()
-              << " bbt_valid_callbacks=" << d.bbt_valid_callbacks.load() << " last_bpm_milli=" << d.last_bpm_milli.load()
+              << " bbt_valid_callbacks=" << d.bbt_valid_callbacks.load() << " bbt_bpm_changes=" << d.bbt_bpm_changes.load()
+              << " last_bpm_milli=" << d.last_bpm_milli.load()
               << " midi_note_on_ch0=" << d.midi_note_on_ch0.load() << " midi_note_off_ch0=" << d.midi_note_off_ch0.load()
               << " midi_note_on_ch1=" << d.midi_note_on_ch1.load() << " midi_note_off_ch1=" << d.midi_note_off_ch1.load()
               << " capture_start=" << d.capture_start.load() << " capture_stop=" << d.capture_stop.load()
@@ -55,6 +56,7 @@ void JackClient::print_diagnostics() const {
               << " capture_while_busy=" << d.capture_while_busy.load() << " empty_play=" << d.empty_play.load()
               << " voice_exhausted=" << d.voice_exhausted.load() << " slot_active_capture=" << d.slot_active_capture.load()
               << " finalize_overflow=" << d.finalize_overflow.load() << " publish_overflow=" << d.publish_overflow.load()
+              << " retirement_store_full=" << d.retirement_store_full.load()
               << " onset_delay_frames=" << d.last_onset_error_frames.load() << '\n';
 }
 
