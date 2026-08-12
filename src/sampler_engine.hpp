@@ -38,6 +38,11 @@ struct Diagnostics final {
     std::atomic<uint64_t> runtime_sample_destructions{0};
     std::atomic<uint64_t> play_onsets{0};
     std::atomic<int64_t> last_onset_error_frames{0};
+    std::atomic<uint64_t> play_event_received_frame{UINT64_MAX};
+    std::atomic<uint64_t> play_start_frame{UINT64_MAX};
+    std::atomic<uint64_t> stretcher_first_input_frame{UINT64_MAX};
+    std::atomic<uint64_t> stretcher_first_output_frame{UINT64_MAX};
+    std::atomic<uint64_t> audio_out_first_nonzero_frame{UINT64_MAX};
 };
 
 class SamplerEngine final {
@@ -51,7 +56,7 @@ public:
     void stop_worker();
     void process(uint32_t nframes, const float* in_left, const float* in_right,
                  float* out_left, float* out_right, const MidiEvent* events, std::size_t event_count,
-                 bool valid_bbt, bool rolling, double bpm) noexcept;
+                 bool valid_bbt, bool rolling, double bpm, uint64_t frame_base = 0) noexcept;
     const Diagnostics& diagnostics() const noexcept { return diagnostics_; }
     Diagnostics& diagnostics() noexcept { return diagnostics_; }
     double beat_counter() const noexcept { return beat_counter_; }
@@ -81,20 +86,22 @@ private:
     void destroy_sample(SampleBuffer* sample) noexcept;
     bool publish_sample(SampleBuffer* sample) noexcept;
     void worker_loop();
-    void handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm) noexcept;
+    void handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept;
     void render_segment(std::size_t offset, std::size_t frames, const float* in_left, const float* in_right,
-                        float* out_left, float* out_right, bool valid_bbt, bool rolling, double bpm) noexcept;
+                        float* out_left, float* out_right, bool valid_bbt, bool rolling, double bpm,
+                        uint64_t segment_frame) noexcept;
     void capture_segment(std::size_t offset, std::size_t frames, const float* in_left, const float* in_right) noexcept;
     void start_capture(int note, bool valid_bbt, bool rolling) noexcept;
     void stop_capture(int note) noexcept;
-    void start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm) noexcept;
+    void start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept;
     void stop_play(int note) noexcept;
     bool retire_if_unused(SampleBuffer* sample) noexcept;
     bool enqueue_retirement(SampleBuffer* sample) noexcept;
     bool sample_referenced(SampleBuffer* sample) const noexcept;
     bool sample_voice_referenced(SampleBuffer* sample) const noexcept;
     void release_voice(Voice& voice) noexcept;
-    void render_voice(Voice& voice, std::size_t frames, float* out_left, float* out_right, double bpm) noexcept;
+    void render_voice(Voice& voice, std::size_t frames, float* out_left, float* out_right, double bpm,
+                      uint64_t segment_frame) noexcept;
 
     double sample_rate_;
     uint32_t quantum_;

@@ -57,7 +57,12 @@ void JackClient::print_diagnostics() const {
               << " voice_exhausted=" << d.voice_exhausted.load() << " slot_active_capture=" << d.slot_active_capture.load()
               << " finalize_overflow=" << d.finalize_overflow.load() << " publish_overflow=" << d.publish_overflow.load()
               << " retirement_store_full=" << d.retirement_store_full.load()
-              << " onset_delay_frames=" << d.last_onset_error_frames.load() << '\n';
+              << " onset_delay_frames=" << d.last_onset_error_frames.load()
+              << " play_event_received_frame=" << d.play_event_received_frame.load()
+              << " play_start_frame=" << d.play_start_frame.load()
+              << " stretcher_first_input_frame=" << d.stretcher_first_input_frame.load()
+              << " stretcher_first_output_frame=" << d.stretcher_first_output_frame.load()
+              << " audio_out_first_nonzero_frame=" << d.audio_out_first_nonzero_frame.load() << '\n';
 }
 
 int JackClient::process_cb(jack_nframes_t nframes, void* arg) noexcept { return static_cast<JackClient*>(arg)->process(nframes); }
@@ -69,6 +74,10 @@ int JackClient::process(jack_nframes_t nframes) noexcept {
     auto* out_l = static_cast<float*>(jack_port_get_buffer(out_left_, nframes));
     auto* out_r = static_cast<float*>(jack_port_get_buffer(out_right_, nframes));
     void* midi = jack_port_get_buffer(midi_in_, nframes);
+    jack_position_t pos{};
+    const jack_transport_state_t state = jack_transport_query(client_, &pos);
+    const bool valid_bbt = (pos.valid & JackPositionBBT) != 0 && pos.beats_per_minute > 0.0;
+    const bool rolling = state == JackTransportRolling || state == JackTransportStarting || state == JackTransportLooping;
     MidiEvent events[256]{};
     const uint32_t count = jack_midi_get_event_count(midi);
     engine_->diagnostics().midi_event_count.fetch_add(count, std::memory_order_relaxed);
@@ -84,14 +93,21 @@ int JackClient::process(jack_nframes_t nframes) noexcept {
         events[used].data1 = ev.buffer[1];
         events[used].data2 = ev.buffer[2];
         const int ch = events[used].status & 0x0F;
+        if (ch == play_channel_ && (events[used].status & 0xF0U) == 0x90U && events[used].data2 != 0) {
+            engine_->diagnostics().play_event_received_frame.store(pos.frame + events[used].time, std::memory_order_relaxed);
+        }
         if (ch == rec_channel_) events[used].status = static_cast<uint8_t>((events[used].status & 0xF0U) | 0U);
         else if (ch == play_channel_) events[used].status = static_cast<uint8_t>((events[used].status & 0xF0U) | 1U);
         ++used;
     }
-    jack_position_t pos{};
-    const jack_transport_state_t state = jack_transport_query(client_, &pos);
-    const bool valid_bbt = (pos.valid & JackPositionBBT) != 0 && pos.beats_per_minute > 0.0;
-    const bool rolling = state == JackTransportRolling || state == JackTransportStarting || state == JackTransportLooping;
-    engine_->process(nframes, in_l, in_r, out_l, out_r, events, used, valid_bbt, rolling, pos.beats_per_minute);
+    engine_->process(nframes, in_l, in_r, out_l, out_r, events, used, valid_bbt, rolling, pos.beats_per_minute, pos.frame);
+    for (jack_nframes_t i = 0; i < nframes; ++i) {
+        if (out_l[i] != 0.0F || out_r[i] != 0.0F) {
+            uint64_t expected = UINT64_MAX;
+            engine_->diagnostics().audio_out_first_nonzero_frame.compare_exchange_strong(
+                expected, pos.frame + i, std::memory_order_relaxed);
+            break;
+        }
+    }
     return 0;
 }

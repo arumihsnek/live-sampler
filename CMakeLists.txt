@@ -37,6 +37,10 @@ add_executable(rubberband_rt_probe tools/rubberband_rt_probe.cpp)
 target_link_libraries(rubberband_rt_probe PRIVATE PkgConfig::RUBBERBAND)
 target_compile_options(rubberband_rt_probe PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(onset_acyclic_recorder tools/onset_acyclic_recorder.cpp)
+target_link_libraries(onset_acyclic_recorder PRIVATE PkgConfig::JACK)
+target_compile_options(onset_acyclic_recorder PRIVATE -Wall -Wextra -Wpedantic)
+
 include(CTest)
 add_test(NAME core COMMAND live-sampler-tests)
 add_test(NAME lifetime_saturation COMMAND live-sampler-lifetime-saturation-test)

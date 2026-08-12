@@ -10,7 +10,7 @@ constexpr auto kOptions = RubberBand::RubberBandStretcher::OptionProcessRealTime
                            RubberBand::RubberBandStretcher::OptionEngineFaster |
                            RubberBand::RubberBandStretcher::OptionThreadingNever |
                            RubberBand::RubberBandStretcher::OptionWindowShort |
-                           RubberBand::RubberBandStretcher::OptionSmoothingOn |
+                           RubberBand::RubberBandStretcher::OptionSmoothingOff |
                            RubberBand::RubberBandStretcher::OptionTransientsSmooth;
 }
 
@@ -215,7 +215,7 @@ void SamplerEngine::stop_capture(int note) noexcept {
     diagnostics_.capture_stop.fetch_add(1, std::memory_order_relaxed);
 }
 
-void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm) noexcept {
+void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept {
     if (!valid_bbt || !rolling || !(bpm > 0.0)) { diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed); return; }
     if (note < 0 || note >= 128 || slots_[note].current == nullptr) { diagnostics_.empty_play.fetch_add(1, std::memory_order_relaxed); return; }
     for (auto& v : voices_) if (v.active && v.slot == note) release_voice(v);
@@ -226,6 +226,7 @@ void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool 
     chosen->slot = note;
     chosen->velocity = velocity;
     chosen->sample = slots_[note].current;
+    diagnostics_.play_start_frame.store(event_frame, std::memory_order_relaxed);
     diagnostics_.play_start.fetch_add(1, std::memory_order_relaxed);
     chosen->source_pos = 0;
     chosen->final_sent = false;
@@ -246,7 +247,7 @@ void SamplerEngine::stop_play(int note) noexcept {
     }
 }
 
-void SamplerEngine::handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm) noexcept {
+void SamplerEngine::handle_event(const MidiEvent& event, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept {
     const uint8_t type = event.status & 0xF0U;
     const int channel = static_cast<int>(event.status & 0x0FU);
     const int note = static_cast<int>(event.data1 & 0x7FU);
@@ -259,7 +260,7 @@ void SamplerEngine::handle_event(const MidiEvent& event, bool valid_bbt, bool ro
     } else if (channel == 1) {
         if (on) diagnostics_.midi_note_on_ch1.fetch_add(1, std::memory_order_relaxed);
         else diagnostics_.midi_note_off_ch1.fetch_add(1, std::memory_order_relaxed);
-        if (on) start_play(note, event.data2, valid_bbt, rolling, bpm); else stop_play(note);
+        if (on) start_play(note, event.data2, valid_bbt, rolling, bpm, event_frame); else stop_play(note);
     }
 }
 
@@ -272,7 +273,8 @@ void SamplerEngine::capture_segment(std::size_t offset, std::size_t frames, cons
     capture_frames_ += copy;
 }
 
-void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, float* out_right, double bpm) noexcept {
+void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, float* out_right, double bpm,
+                                  uint64_t segment_frame) noexcept {
     if (!v.active || v.sample == nullptr || frames == 0) return;
     const double ratio = elastic_time_ratio(v.sample->captured_beats, bpm, v.sample->frames, sample_rate_);
     if (ratio > 0.0) v.stretcher->setTimeRatio(ratio);
@@ -285,6 +287,11 @@ void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, 
             float* output[2] = {v.output_left.get(), v.output_right.get()};
             const std::size_t got = v.stretcher->retrieve(output, want);
             for (std::size_t i = 0; i < got; ++i) {
+                if (v.output_left[i] != 0.0F || v.output_right[i] != 0.0F) {
+                    uint64_t expected = UINT64_MAX;
+                    diagnostics_.stretcher_first_output_frame.compare_exchange_strong(
+                        expected, segment_frame + produced + i, std::memory_order_relaxed);
+                }
                 if (v.delay_remaining > 0) { --v.delay_remaining; continue; }
                 out_left[produced + i] += v.output_left[i] * gain;
                 out_right[produced + i] += v.output_right[i] * gain;
@@ -301,6 +308,11 @@ void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, 
                 --v.pad_remaining; ++in_count; continue;
             }
             if (v.source_pos < v.sample->frames) {
+                if (v.source_pos == 0) {
+                    uint64_t expected = UINT64_MAX;
+                    diagnostics_.stretcher_first_input_frame.compare_exchange_strong(
+                        expected, segment_frame + in_count, std::memory_order_relaxed);
+                }
                 v.input_left[in_count] = v.sample->left[v.source_pos];
                 v.input_right[in_count] = v.sample->right[v.source_pos];
                 ++v.source_pos; ++in_count; continue;
@@ -320,14 +332,15 @@ void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, 
 }
 
 void SamplerEngine::render_segment(std::size_t offset, std::size_t frames, const float* in_left, const float* in_right,
-                                    float* out_left, float* out_right, bool valid_bbt, bool rolling, double bpm) noexcept {
+                                    float* out_left, float* out_right, bool valid_bbt, bool rolling, double bpm,
+                                    uint64_t segment_frame) noexcept {
     if (frames == 0) return;
     if (valid_bbt && rolling && bpm > 0.0) {
         if (!beat_initialized_) { beat_counter_ = 0.0; beat_initialized_ = true; }
         const double increment = static_cast<double>(frames) * bpm / (sample_rate_ * 60.0);
         capture_segment(offset, frames, in_left, in_right);
         beat_counter_ += increment;
-        for (uint32_t i = 0; i < max_voices_; ++i) render_voice(voices_[i], frames, out_left, out_right, bpm);
+        for (uint32_t i = 0; i < max_voices_; ++i) render_voice(voices_[i], frames, out_left, out_right, bpm, segment_frame);
     } else {
         if (capture_active_) diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed);
         for (uint32_t i = 0; i < max_voices_; ++i) if (voices_[i].active) release_voice(voices_[i]);
@@ -336,7 +349,7 @@ void SamplerEngine::render_segment(std::size_t offset, std::size_t frames, const
 
 void SamplerEngine::process(uint32_t nframes, const float* in_left, const float* in_right,
                             float* out_left, float* out_right, const MidiEvent* events, std::size_t event_count,
-                            bool valid_bbt, bool rolling, double bpm) noexcept {
+                            bool valid_bbt, bool rolling, double bpm, uint64_t frame_base) noexcept {
     assert(diagnostics_.runtime_sample_destructions.load(std::memory_order_acquire) == 0);
     if (valid_bbt && rolling && bpm > 0.0) {
         diagnostics_.bbt_valid_callbacks.fetch_add(1, std::memory_order_relaxed);
@@ -354,11 +367,11 @@ void SamplerEngine::process(uint32_t nframes, const float* in_left, const float*
     for (std::size_t i = 0; i < event_count; ++i) {
         const std::size_t t = std::min<std::size_t>(events[i].time, nframes);
         if (t < cursor) continue;
-        render_segment(cursor, t - cursor, in_left, in_right, out_left, out_right, valid_bbt, rolling, bpm);
-        handle_event(events[i], valid_bbt, rolling, bpm);
+        render_segment(cursor, t - cursor, in_left, in_right, out_left, out_right, valid_bbt, rolling, bpm, frame_base + cursor);
+        handle_event(events[i], valid_bbt, rolling, bpm, frame_base + t);
         cursor = t;
     }
-    render_segment(cursor, nframes - cursor, in_left, in_right, out_left, out_right, valid_bbt, rolling, bpm);
+    render_segment(cursor, nframes - cursor, in_left, in_right, out_left, out_right, valid_bbt, rolling, bpm, frame_base + cursor);
 }
 
 std::size_t SamplerEngine::slot_frames(int note) const noexcept { return (note >= 0 && note < 128 && slots_[note].current) ? slots_[note].current->frames : 0; }
