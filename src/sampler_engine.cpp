@@ -225,9 +225,13 @@ void SamplerEngine::stop_capture(int note) noexcept {
 }
 
 void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept {
-    if (!valid_bbt || !rolling || !(bpm > 0.0)) { diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed); return; }
     if (note < 0 || note >= 128) return;
     auto& fifo = pending_[note];
+    if (!valid_bbt || !rolling || !(bpm > 0.0)) {
+        fifo.push_gap();
+        diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     if (slots_[note].current == nullptr) {
         fifo.push_gap();
         diagnostics_.empty_play.fetch_add(1, std::memory_order_relaxed);

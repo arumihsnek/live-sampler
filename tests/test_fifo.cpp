@@ -27,13 +27,14 @@ static void install_sample(SamplerEngine& engine, int note, std::size_t frames =
     engine.slots_[note].current = sample;
 }
 
-static void send(SamplerEngine& engine, std::initializer_list<MidiEvent> events) {
+static void send(SamplerEngine& engine, std::initializer_list<MidiEvent> events,
+                  bool valid_bbt = true, bool rolling = true, double bpm = 120.0) {
     std::array<float, kQuantum> in{};
     std::array<float, kQuantum> out{};
     std::array<MidiEvent, 8> batch{};
     std::size_t count = 0;
     for (const auto& event : events) batch[count++] = event;
-    engine.process(kQuantum, in.data(), in.data(), out.data(), out.data(), batch.data(), count, true, true, 120.0);
+    engine.process(kQuantum, in.data(), in.data(), out.data(), out.data(), batch.data(), count, valid_bbt, rolling, bpm);
 }
 
 static void pump(SamplerEngine& engine, int blocks) {
@@ -118,6 +119,22 @@ static void test_natural_completion_and_isolation() {
     expect(engine.diagnostics().runtime_sample_destructions.load() == 0, "natural isolation no runtime destruction");
 }
 
+static void test_invalid_transport_noteon_gap() {
+    SamplerEngine engine(48000.0, kQuantum, 1.0, 1);
+    install_sample(engine, kNote);
+    send(engine, {{0, 0x91, kNote, 100}});
+    send(engine, {{0, 0x91, kNote, 100}}, false, false, 0.0);
+    expect(engine.diagnostics().invalid_bbt.load() == 1, "invalid transport NoteOn diagnosed");
+    send(engine, {{0, 0x81, kNote, 0}});
+    expect(!engine.voices_[0].active, "first NoteOff releases only prior valid voice");
+    send(engine, {{0, 0x91, kNote, 100}});
+    expect(engine.voices_[0].active, "later voice starts after release");
+    send(engine, {{0, 0x81, kNote, 0}});
+    expect(engine.voices_[0].active, "invalid transport gap preserves later voice");
+    send(engine, {{0, 0x81, kNote, 0}});
+    expect(!engine.voices_[0].active, "later voice releases after gap");
+}
+
 static void test_multiple_rejected_and_bounded() {
     SamplerEngine engine(48000.0, kQuantum, 1.0, 1);
     install_sample(engine, kNote);
@@ -136,6 +153,7 @@ int main() {
     test_voice_gap_gap();
     test_voice_gap_later_voice();
     test_natural_completion_and_isolation();
+    test_invalid_transport_noteon_gap();
     test_multiple_rejected_and_bounded();
     std::cout << "PASS fifo sequential overlap multi_gap gap_between_voices natural_completion multiple_rejected different_note_isolation shared_sample_borrow\n";
 }
