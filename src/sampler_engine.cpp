@@ -363,8 +363,18 @@ void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, 
             v.stretcher->process(input, in_count, final_block);
             if (final_block) v.final_sent = true;
         } else if (final_block) {
-            v.stretcher->process(nullptr, 0, true);
+            // Rubber Band 4.0.0 process() dereferences inputs[c] unconditionally
+            // (src/faster/StretcherProcess.cpp consumeChannel) and documents no
+            // null-input exemption (unlike study()); process(nullptr,0,true) is a
+            // caller/API-contract violation (Issue #4). Send exactly one silent
+            // frame instead: buffers are preallocated with capacity >= 1 in the
+            // voice ctor and exclusively owned by this voice during render_voice.
+            v.input_left[0] = 0.0F;
+            v.input_right[0] = 0.0F;
+            const float* const input[2] = {v.input_left.get(), v.input_right.get()};
+            v.stretcher->process(input, 1, true);
             v.final_sent = true;
+            diagnostics_.stretcher_finalize_calls.fetch_add(1, std::memory_order_relaxed);
         } else break;
     }
 }

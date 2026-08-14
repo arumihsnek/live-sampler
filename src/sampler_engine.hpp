@@ -46,6 +46,7 @@ struct Diagnostics final {
     std::atomic<uint64_t> stretcher_first_input_frame{UINT64_MAX};
     std::atomic<uint64_t> stretcher_first_output_frame{UINT64_MAX};
     std::atomic<uint64_t> audio_out_first_nonzero_frame{UINT64_MAX};
+    std::atomic<uint64_t> stretcher_finalize_calls{0};
 };
 
 class SamplerEngine final {
