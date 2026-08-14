@@ -62,7 +62,9 @@ void JackClient::print_diagnostics() const {
               << " play_start_frame=" << d.play_start_frame.load()
               << " stretcher_first_input_frame=" << d.stretcher_first_input_frame.load()
               << " stretcher_first_output_frame=" << d.stretcher_first_output_frame.load()
-              << " audio_out_first_nonzero_frame=" << d.audio_out_first_nonzero_frame.load() << '\n';
+              << " audio_out_first_nonzero_frame=" << d.audio_out_first_nonzero_frame.load()
+              << " play_natural_complete=" << d.play_natural_complete.load()
+              << " stretcher_finalize_calls=" << d.stretcher_finalize_calls.load() << '\n';
 }
 
 int JackClient::process_cb(jack_nframes_t nframes, void* arg) noexcept { return static_cast<JackClient*>(arg)->process(nframes); }
