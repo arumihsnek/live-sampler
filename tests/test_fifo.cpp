@@ -106,9 +106,12 @@ static void test_natural_completion_and_isolation() {
     expect(engine.diagnostics().play_natural_complete.load() == 1, "natural completion observed");
     send(engine, {{0, 0x91, kNote, 100}});
     expect(engine.voices_[0].active || engine.voices_[1].active, "later same-note voice starts");
+    const auto same_note_voice = engine.voices_[0].active && engine.voices_[0].slot == kNote ? 0U : 1U;
+    const auto stops_before_gap_off = engine.diagnostics().play_stop.load();
     send(engine, {{0, 0x91, kOther, 100}});
     send(engine, {{0, 0x81, kNote, 0}});
-    expect(engine.voices_[0].active || engine.voices_[1].active, "natural gap NoteOff releases no later voice");
+    expect(engine.voices_[same_note_voice].active && engine.voices_[same_note_voice].slot == kNote, "natural gap NoteOff preserves later same-note voice");
+    expect(engine.diagnostics().play_stop.load() == stops_before_gap_off, "natural gap NoteOff does not count a play stop");
     send(engine, {{0, 0x81, kNote, 0}});
     send(engine, {{0, 0x81, kOther, 0}});
     expect(engine.diagnostics().play_stop.load() == 2, "later voice and other note release independently");
