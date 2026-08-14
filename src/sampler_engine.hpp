@@ -17,6 +17,9 @@ struct Diagnostics final {
     std::atomic<uint64_t> capture_while_busy{0};
     std::atomic<uint64_t> empty_play{0};
     std::atomic<uint64_t> voice_exhausted{0};
+    std::atomic<uint64_t> pending_overflow{0};
+    std::atomic<uint64_t> unmatched_note_off{0};
+    std::atomic<uint64_t> play_natural_complete{0};
     std::atomic<uint64_t> slot_active_capture{0};
     std::atomic<uint64_t> midi_overflow{0};
     std::atomic<uint64_t> midi_event_count{0};
@@ -66,6 +69,53 @@ public:
 
 private:
     struct FinalizeRequest { int slot; std::size_t frames; double beats; };
+    struct PendingInstance final {
+        int8_t voice = -1;
+        uint64_t gaps_before = 0;
+    };
+    struct NoteFifo final {
+        std::array<PendingInstance, 8> instances{};
+        uint8_t size = 0;
+        uint64_t trailing_gaps = 0;
+
+        bool push_voice(int8_t voice_index) noexcept {
+            if (size >= instances.size()) return false;
+            instances[size++] = PendingInstance{voice_index, trailing_gaps};
+            trailing_gaps = 0;
+            return true;
+        }
+        void push_gap() noexcept { ++trailing_gaps; }
+        bool consume(int8_t& voice_index) noexcept {
+            voice_index = -1;
+            if (size > 0) {
+                if (instances[0].gaps_before > 0) {
+                    --instances[0].gaps_before;
+                    return true;
+                }
+                voice_index = instances[0].voice;
+                for (uint8_t i = 1; i < size; ++i) instances[i - 1] = instances[i];
+                --size;
+                return true;
+            }
+            if (trailing_gaps > 0) {
+                --trailing_gaps;
+                return true;
+            }
+            return false;
+        }
+        bool detach_voice(int8_t voice_index) noexcept {
+            for (uint8_t i = 0; i < size; ++i) {
+                if (instances[i].voice != voice_index) continue;
+                const uint64_t transferred_gaps = instances[i].gaps_before + 1;
+                if (i + 1 < size) instances[i + 1].gaps_before += transferred_gaps;
+                else trailing_gaps += transferred_gaps;
+                for (uint8_t j = static_cast<uint8_t>(i + 1); j < size; ++j) instances[j - 1] = instances[j];
+                --size;
+                return true;
+            }
+            return false;
+        }
+    };
     struct Voice final {
         bool active = false;
         int slot = -1;
@@ -100,6 +150,7 @@ private:
     bool sample_referenced(SampleBuffer* sample) const noexcept;
     bool sample_voice_referenced(SampleBuffer* sample) const noexcept;
     void release_voice(Voice& voice) noexcept;
+    void complete_voice(Voice& voice) noexcept;
     void render_voice(Voice& voice, std::size_t frames, float* out_left, float* out_right, double bpm,
                       uint64_t segment_frame) noexcept;
 
@@ -111,6 +162,7 @@ private:
     std::unique_ptr<float[]> capture_right_;
     std::array<Slot, 128> slots_{};
     std::array<Voice, 8> voices_{};
+    std::array<NoteFifo, 128> pending_{};
     SpscQueue<FinalizeRequest, 8> finalize_queue_;
     SpscQueue<SampleBuffer*, 8> publish_queue_;
     std::array<SampleBuffer*, 384> retired_samples_{};

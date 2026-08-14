@@ -55,11 +55,14 @@ The client provides these ports (with the selected client name):
 
 - Channel 1 Note On starts recording/replacing the note-number slot.
 - Channel 1 Note Off ends that capture. Note On with velocity zero is treated as Note Off.
-- Channel 2 Note On starts gated playback of the selected slot; velocity controls gain.
-- Channel 2 Note Off stops the matching playback voice.
+- Channel 2 Note On creates one pending playback instance in that MIDI-note FIFO. If a voice is available it is bound to that instance; otherwise the instance remains a bounded logical gap and `voice_exhausted` is recorded. Empty-slot NoteOn is likewise retained as a gap.
+- Channel 2 Note Off consumes exactly the oldest pending instance for that note. A gap consumes the NoteOff without touching a later voice; a bound instance releases only its own voice. Same-note overlap is therefore FIFO (`ON1 ON2 OFF1 OFF2`), not mono-retrigger.
+- Natural voice completion preserves its FIFO position as a gap. A later NoteOff cannot release a newer instance, including when multiple rejected NoteOns occur before a later voice becomes available.
+- Note numbers have independent FIFOs; a NoteOff for one note cannot release a voice for another note. All FIFO storage is fixed before activation and is touched only by the realtime thread.
 - Empty slots, invalid channels, active-slot replacement conflicts, unmatched events, and voice exhaustion are handled as diagnostics rather than undefined behavior.
 - Record and playback activation require rolling JACK transport and valid `JackPositionBBT` with a positive BPM.
 - The note number is the slot identity; replacing a slot does not renumber other slots.
+- Events at the same JACK frame are applied in delivery order. NoteOff-before-NoteOn consumes the oldest prior instance; NoteOn-before-NoteOff can release the newly-created instance.
 
 ## Tests
 
@@ -69,13 +72,14 @@ Run the registered offline tests:
 ctest --test-dir build --output-on-failure
 ```
 
-The repository currently contains core behavior tests and a lifetime-saturation test. The pilot also includes the JACK driver and Rubber Band probe under `tools/`; they require a running JACK-compatible server and are not automatic production certification.
+The repository contains core behavior, FIFO pairing, and lifetime-saturation tests. The pilot also includes the JACK driver and Rubber Band probe under `tools/`; they require a running JACK-compatible server and are not automatic production certification.
 
 ## What is implemented, tested, and pending
 
 | Area | State | Meaning |
 |---|---|---|
 | MIDI channel mapping and note-slot identity | **IMPLEMENTED / TESTED** | Covered by the source and offline tests. |
+| FIFO playback pairing, overlap, gaps, natural completion, and note isolation | **IMPLEMENTED / TESTED** | Covered by the FIFO regression suite with bounded `--voices` and shared immutable sample borrowing. |
 | Basic capture/playback and elastic ratio calculation | **IMPLEMENTED / TESTED** | Covered by the current pilot tests. |
 | JACK BBT-following behavior | **IMPLEMENTED / PILOT-TESTED** | Requires a JACK transport environment for runtime evidence. |
 | Runtime ownership/lifetime behavior | **IMPLEMENTED / TESTED** | The candidate has offline lifetime coverage; inspect the source before relying on stronger real-time claims. |

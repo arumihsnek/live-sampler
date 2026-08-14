@@ -29,6 +29,10 @@ add_executable(live-sampler-lifetime-saturation-test tests/test_lifetime_saturat
 target_link_libraries(live-sampler-lifetime-saturation-test PRIVATE live_sampler_core)
 target_compile_options(live-sampler-lifetime-saturation-test PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(live-sampler-fifo-tests tests/test_fifo.cpp)
+target_link_libraries(live-sampler-fifo-tests PRIVATE live_sampler_core)
+target_compile_options(live-sampler-fifo-tests PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(pilot_jack_driver tools/pilot_jack_driver.cpp)
 target_link_libraries(pilot_jack_driver PRIVATE PkgConfig::JACK)
 target_compile_options(pilot_jack_driver PRIVATE -Wall -Wextra -Wpedantic)
@@ -44,3 +48,4 @@ target_compile_options(onset_acyclic_recorder PRIVATE -Wall -Wextra -Wpedantic)
 include(CTest)
 add_test(NAME core COMMAND live-sampler-tests)
 add_test(NAME lifetime_saturation COMMAND live-sampler-lifetime-saturation-test)
+add_test(NAME fifo COMMAND live-sampler-fifo-tests)

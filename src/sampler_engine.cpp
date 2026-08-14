@@ -189,6 +189,15 @@ void SamplerEngine::release_voice(Voice& voice) noexcept {
     retire_if_unused(old);
 }
 
+void SamplerEngine::complete_voice(Voice& voice) noexcept {
+    const int note = voice.slot;
+    const auto index = static_cast<int8_t>(&voice - voices_.data());
+    if (note >= 0 && note < 128 && pending_[note].detach_voice(index)) {
+        diagnostics_.play_natural_complete.fetch_add(1, std::memory_order_relaxed);
+    }
+    release_voice(voice);
+}
+
 void SamplerEngine::start_capture(int note, bool valid_bbt, bool rolling) noexcept {
     if (!valid_bbt || !rolling) { diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed); return; }
     if (capture_active_ || capture_pending_) { diagnostics_.capture_while_busy.fetch_add(1, std::memory_order_relaxed); return; }
@@ -217,11 +226,28 @@ void SamplerEngine::stop_capture(int note) noexcept {
 
 void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool rolling, double bpm, uint64_t event_frame) noexcept {
     if (!valid_bbt || !rolling || !(bpm > 0.0)) { diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed); return; }
-    if (note < 0 || note >= 128 || slots_[note].current == nullptr) { diagnostics_.empty_play.fetch_add(1, std::memory_order_relaxed); return; }
-    for (auto& v : voices_) if (v.active && v.slot == note) release_voice(v);
+    if (note < 0 || note >= 128) return;
+    auto& fifo = pending_[note];
+    if (slots_[note].current == nullptr) {
+        fifo.push_gap();
+        diagnostics_.empty_play.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     Voice* chosen = nullptr;
-    for (uint32_t i = 0; i < max_voices_; ++i) if (!voices_[i].active) { chosen = &voices_[i]; break; }
-    if (chosen == nullptr) { diagnostics_.voice_exhausted.fetch_add(1, std::memory_order_relaxed); return; }
+    uint32_t chosen_index = 0;
+    for (uint32_t i = 0; i < max_voices_; ++i) {
+        if (!voices_[i].active) { chosen = &voices_[i]; chosen_index = i; break; }
+    }
+    if (chosen == nullptr) {
+        fifo.push_gap();
+        diagnostics_.voice_exhausted.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (!fifo.push_voice(static_cast<int8_t>(chosen_index))) {
+        diagnostics_.pending_overflow.fetch_add(1, std::memory_order_relaxed);
+        fifo.push_gap();
+        return;
+    }
     chosen->active = true;
     chosen->slot = note;
     chosen->velocity = velocity;
@@ -241,9 +267,17 @@ void SamplerEngine::start_play(int note, uint8_t velocity, bool valid_bbt, bool 
 }
 
 void SamplerEngine::stop_play(int note) noexcept {
-    for (auto& v : voices_) if (v.active && v.slot == note) {
+    if (note < 0 || note >= 128) return;
+    int8_t voice_index = -1;
+    if (!pending_[note].consume(voice_index)) {
+        diagnostics_.unmatched_note_off.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (voice_index < 0 || static_cast<uint32_t>(voice_index) >= max_voices_) return;
+    auto& voice = voices_[static_cast<uint32_t>(voice_index)];
+    if (voice.active && voice.slot == note) {
         diagnostics_.play_stop.fetch_add(1, std::memory_order_relaxed);
-        release_voice(v);
+        release_voice(voice);
     }
 }
 
@@ -299,7 +333,7 @@ void SamplerEngine::render_voice(Voice& v, std::size_t frames, float* out_left, 
             produced += got;
             continue;
         }
-        if (v.final_sent) { if (available < 0) release_voice(v); break; }
+        if (v.final_sent) { if (available < 0) complete_voice(v); break; }
         std::size_t in_count = 0;
         bool final_block = false;
         while (in_count < quantum_) {
@@ -343,7 +377,7 @@ void SamplerEngine::render_segment(std::size_t offset, std::size_t frames, const
         for (uint32_t i = 0; i < max_voices_; ++i) render_voice(voices_[i], frames, out_left, out_right, bpm, segment_frame);
     } else {
         if (capture_active_) diagnostics_.invalid_bbt.fetch_add(1, std::memory_order_relaxed);
-        for (uint32_t i = 0; i < max_voices_; ++i) if (voices_[i].active) release_voice(voices_[i]);
+        for (uint32_t i = 0; i < max_voices_; ++i) if (voices_[i].active) complete_voice(voices_[i]);
     }
 }
 
